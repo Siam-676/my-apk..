@@ -16,9 +16,6 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Auto-Generate Complete Android Project Structure
         run: |
           mkdir -p app/src/main/java/com/nexuscorex/agent
@@ -52,6 +49,7 @@ jobs:
           cat << 'EOF' > gradle.properties
           org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
           android.useAndroidX=true
+          android.nonTransitiveRClass=true
           EOF
 
           cat << 'EOF' > app/build.gradle
@@ -86,7 +84,6 @@ jobs:
               <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
               <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
               <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
               <uses-permission android:name="android.permission.CAMERA" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
@@ -353,8 +350,10 @@ jobs:
         with:
           gradle-version: '8.4'
 
-      - name: Build Debug APK
-        run: gradle assembleDebug
+      - name: Build Debug APK with Android SDK Auto-Download
+        run: |
+          yes | sdkmanager --licenses || true
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload Compiled APK
         uses: actions/upload-artifact@v4
