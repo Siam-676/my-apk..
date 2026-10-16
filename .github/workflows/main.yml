@@ -7,20 +7,355 @@ jobs:
   build-apk:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Auto-Generate Complete Android Project Structure
+        run: |
+          mkdir -p app/src/main/java/com/nexuscorex/agent
+
+          cat << 'EOF' > settings.gradle
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "NexusCoreXAgent"
+          include ':app'
+          EOF
+
+          cat << 'EOF' > build.gradle
+          plugins {
+              id 'com.android.application' version '8.2.0' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.20' apply false
+          }
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF
+
+          cat << 'EOF' > app/build.gradle
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+          android {
+              namespace 'com.nexuscorex.agent'
+              compileSdk 34
+              defaultConfig {
+                  applicationId "com.nexuscorex.agent"
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+              <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="Nexus Core X Agent"
+                  android:supportsRtl="true"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".AppFirewallVpnService"
+                      android:exported="false"
+                      android:permission="android.permission.BIND_VPN_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.net.VpnService" />
+                      </intent-filter>
+                  </service>
+                  <service
+                      android:name=".NexusHybridAgentService"
+                      android:exported="false" />
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/nexuscorex/agent/MainActivity.kt
+          package com.nexuscorex.agent
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.net.VpnService
+          import android.os.Bundle
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import android.graphics.Color
+          import android.view.Gravity
+
+          class MainActivity : Activity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val layout = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      gravity = Gravity.CENTER
+                      setBackgroundColor(Color.parseColor("#05060B"))
+                      setPadding(48, 48, 48, 48)
+                  }
+                  val title = TextView(this).apply {
+                      text = "NEXUS CORE X — ANDROID AGENT"
+                      textSize = 20f
+                      setTextColor(Color.parseColor("#22D3EE"))
+                  }
+                  val status = TextView(this).apply {
+                      text = "Hybrid LAN/WAN Enforcer + Per-App VPN Firewall Active on Port 5055"
+                      textSize = 13f
+                      setTextColor(Color.parseColor("#94A3B8"))
+                      setPadding(0, 24, 0, 48)
+                  }
+                  val btn = Button(this).apply {
+                      text = "Authorize VPN Firewall & Start Agent"
+                      setOnClickListener {
+                          val vpnIntent = VpnService.prepare(this@MainActivity)
+                          if (vpnIntent != null) {
+                              startActivityForResult(vpnIntent, 100)
+                          } else {
+                              onActivityResult(100, RESULT_OK, null)
+                          }
+                      }
+                  }
+                  layout.addView(title)
+                  layout.addView(status)
+                  layout.addView(btn)
+                  setContentView(layout)
+                  startService(Intent(this, NexusHybridAgentService::class.java))
+              }
+
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  if (requestCode == 100 && resultCode == RESULT_OK) {
+                      startService(Intent(this, NexusHybridAgentService::class.java))
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/nexuscorex/agent/AppFirewallVpnService.kt
+          package com.nexuscorex.agent
+
+          import android.content.Intent
+          import android.net.VpnService
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.ParcelFileDescriptor
+          import java.util.concurrent.ConcurrentHashMap
+
+          class AppFirewallVpnService : VpnService() {
+              private var vpnInterface: ParcelFileDescriptor? = null
+              private val mainHandler = Handler(Looper.getMainLooper())
+
+              companion object {
+                  const val ACTION_APPLY_RULES = "com.nexuscorex.agent.ACTION_APPLY_RULES"
+                  const val EXTRA_PACKAGE = "extra_package"
+                  const val EXTRA_BLOCK = "extra_block"
+                  const val EXTRA_DURATION_SEC = "extra_duration_sec"
+                  private val blockedPackages = ConcurrentHashMap<String, Runnable>()
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent?.action == ACTION_APPLY_RULES) {
+                      val pkg = intent.getStringExtra(EXTRA_PACKAGE) ?: return START_STICKY
+                      val shouldBlock = intent.getBooleanExtra(EXTRA_BLOCK, false)
+                      val durationSec = intent.getLongExtra(EXTRA_DURATION_SEC, 0L)
+                      updateAppRule(pkg, shouldBlock, durationSec)
+                  }
+                  return START_STICKY
+              }
+
+              private fun updateAppRule(pkg: String, block: Boolean, durationSec: Long) {
+                  blockedPackages.remove(pkg)?.let { mainHandler.removeCallbacks(it) }
+                  if (block) {
+                      val expiryTask = Runnable {
+                          blockedPackages.remove(pkg)
+                          rebuildVpnSinkhole()
+                      }
+                      blockedPackages[pkg] = expiryTask
+                      if (durationSec > 0) {
+                          mainHandler.postDelayed(expiryTask, durationSec * 1000L)
+                      }
+                  }
+                  rebuildVpnSinkhole()
+              }
+
+              private fun rebuildVpnSinkhole() {
+                  try {
+                      vpnInterface?.close()
+                      vpnInterface = null
+                      if (blockedPackages.isEmpty()) {
+                          stopSelf()
+                          return
+                      }
+                      val builder = Builder()
+                          .setSession("NexusCoreX-AppFirewall")
+                          .addAddress("10.215.173.1", 32)
+                          .addRoute("0.0.0.0", 0)
+                          .setBlocking(false)
+
+                      for (pkgName in blockedPackages.keys()) {
+                          try { builder.addAllowedApplication(pkgName) } catch (_: Exception) {}
+                      }
+                      vpnInterface = builder.establish()
+                  } catch (e: Exception) {
+                      e.printStackTrace()
+                  }
+              }
+
+              override fun onDestroy() {
+                  vpnInterface?.close()
+                  super.onDestroy()
+              }
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/nexuscorex/agent/NexusHybridAgentService.kt
+          package com.nexuscorex.agent
+
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.net.ConnectivityManager
+          import android.net.NetworkCapabilities
+          import android.os.IBinder
+          import org.json.JSONObject
+          import java.io.BufferedReader
+          import java.io.InputStreamReader
+          import java.io.PrintWriter
+          import java.net.Inet4Address
+          import java.net.InetAddress
+          import java.net.ServerSocket
+          import kotlin.concurrent.thread
+
+          class NexusHybridAgentService : Service() {
+              @Volatile private var running = true
+              private var serverSocket: ServerSocket? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  startCommandServer()
+              }
+
+              private fun isSameLocalLan(peerAddress: InetAddress): Boolean {
+                  val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                  val activeNet = cm.activeNetwork ?: return false
+                  val caps = cm.getNetworkCapabilities(activeNet) ?: return false
+                  if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return false
+                  val linkProps = cm.getLinkProperties(activeNet) ?: return false
+                  val peerBytes = peerAddress.address
+                  if (peerBytes.size != 4) return false
+                  for (linkAddr in linkProps.linkAddresses) {
+                      val localAddr = linkAddr.address
+                      if (localAddr is Inet4Address) {
+                          val mask = if (linkAddr.prefixLength == 0) 0 else (-1 shl (32 - linkAddr.prefixLength))
+                          val l = localAddr.address
+                          val int1 = ((l[0].toInt() and 0xFF) shl 24) or ((l[1].toInt() and 0xFF) shl 16) or ((l[2].toInt() and 0xFF) shl 8) or (l[3].toInt() and 0xFF)
+                          val int2 = ((peerBytes[0].toInt() and 0xFF) shl 24) or ((peerBytes[1].toInt() and 0xFF) shl 16) or ((peerBytes[2].toInt() and 0xFF) shl 8) or (peerBytes[3].toInt() and 0xFF)
+                          if ((int1 and mask) == (int2 and mask)) return true
+                      }
+                  }
+                  return false
+              }
+
+              private fun startCommandServer() {
+                  thread(start = true, isDaemon = true) {
+                      try {
+                          serverSocket = ServerSocket(5055)
+                          while (running) {
+                              val client = serverSocket?.accept() ?: break
+                              thread(start = true) {
+                                  client.use { sock ->
+                                      val sameLan = isSameLocalLan(sock.inetAddress)
+                                      val reader = BufferedReader(InputStreamReader(sock.getInputStream()))
+                                      val writer = PrintWriter(sock.getOutputStream(), true)
+                                      val rawLine = reader.readLine() ?: return@use
+                                      val cmd = JSONObject(rawLine)
+                                      val action = cmd.optString("action")
+                                      val lanOnly = setOf("CAMERA_STREAM", "INJECT_TOUCH", "START_ACTIVITY", "FILE_ACCESS")
+                                      if (action in lanOnly && !sameLan) {
+                                          writer.println(JSONObject().put("ok", false).put("error", "WAN_RESTRICTED").toString())
+                                          return@use
+                                      }
+                                      if (action == "VPN_FIREWALL_RULE") {
+                                          val vpnIntent = Intent(this, AppFirewallVpnService::class.java).apply {
+                                              this.action = AppFirewallVpnService.ACTION_APPLY_RULES
+                                              putExtra(AppFirewallVpnService.EXTRA_PACKAGE, cmd.getString("package"))
+                                              putExtra(AppFirewallVpnService.EXTRA_BLOCK, cmd.getBoolean("block"))
+                                              putExtra(AppFirewallVpnService.EXTRA_DURATION_SEC, cmd.optLong("duration_sec", 0L))
+                                          }
+                                          startService(vpnIntent)
+                                      }
+                                      writer.println(JSONObject().put("ok", true).put("mode", if (sameLan) "LAN" else "WAN").toString())
+                                  }
+                              }
+                          }
+                      } catch (_: Exception) {}
+                  }
+              }
+
+              override fun onDestroy() {
+                  running = false
+                  serverSocket?.close()
+                  super.onDestroy()
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+          }
+          EOF
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.4'
+
       - name: Build Debug APK
         run: gradle assembleDebug
+
       - name: Upload Compiled APK
         uses: actions/upload-artifact@v4
         with:
